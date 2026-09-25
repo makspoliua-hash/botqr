@@ -1,0 +1,16 @@
+[project]
+name = "botqr"
+version = "0.1.0"
+description = "Telegram QR bot on Cloudflare Workers"
+requires-python = ">=3.12"
+dependencies = [
+    "pillow",
+    "qrcode",
+    "requests",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+]

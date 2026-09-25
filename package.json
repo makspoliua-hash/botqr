@@ -1,0 +1,18 @@
+{
+	"name": "botqr",
+	"version": "0.0.0",
+	"private": true,
+	"cloudflare": {
+		"bindings": {
+			"BOT_TOKEN": {
+				"description": "Токен Telegram-бота от @BotFather"
+			}
+		}
+	},
+	"scripts": {
+		"deploy": "curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH=\"$HOME/.local/bin:$PATH\" && uv run pywrangler deploy"
+	},
+	"devDependencies": {
+		"wrangler": "^4.114.0"
+	}
+}
