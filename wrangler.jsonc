@@ -6,6 +6,12 @@
 	"compatibility_flags": [
 		"python_workers"
 	],
+	"kv_namespaces": [
+		{
+			"binding": "QRBOT_KV",
+			"id": "04958ebe84ed4c7cb9bbd94c234b4be0"
+		}
+	],
 	"observability": {
 		"enabled": true
 	}
