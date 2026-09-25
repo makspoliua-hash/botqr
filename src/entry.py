@@ -4,11 +4,13 @@
 
 Доступ по списку (Cloudflare KV):
   * администратор присылает @username  ->  этому человеку выдаётся доступ;
-  * /list            -> показать список доступа;
+  * /list             -> показать список доступа;
   * /revoke @username -> забрать доступ;
-  * /id              -> узнать свой Telegram ID и username.
+  * /id               -> узнать свой Telegram ID и username.
 
 Администраторы задаются секретами: ADMIN_IDS (числа) и/или ADMIN_USERNAMES.
+
+На одну ссылку бот присылает ДВА PNG-файла — QR на двух разных шаблонах.
 """
 
 import base64
@@ -23,15 +25,18 @@ from PIL import Image
 from pyodide.ffi import to_js
 from workers import Response, WorkerEntrypoint
 
-from template_data import TEMPLATE_B64
+from template_data import (
+    TEMPLATE1_B64,
+    TEMPLATE1_LOGO,
+    TEMPLATE1_QR,
+    TEMPLATE2_B64,
+    TEMPLATE2_LOGO,
+    TEMPLATE2_QR,
+)
 
 URL_RE = re.compile(r"^(https?://|www\.)[^\s]+$", re.IGNORECASE)
 # @username: 4..32 символа (латиница, цифры, подчёркивание)
 USERNAME_RE = re.compile(r"^@([A-Za-z0-9_]{4,32})$")
-
-QR_BOX = (188, 542, 509, 863)
-LOGO_BOX = (308, 662, 389, 743)
-QR_COLOR = (13, 71, 91)
 
 # Придуманный секрет: Telegram присылает его в заголовке,
 # чтобы посторонние не могли слать поддельные апдейты.
@@ -40,7 +45,25 @@ WEBHOOK_SECRET = "qrbot_wh_7f3a9c2e1b"
 # Ключ в KV-хранилище, где лежит список разрешённых username.
 KV_KEY = "allowed"
 
-_template = None
+# Шаблоны: картинка (уже уменьшенная) + области QR и логотипа + цвет квадратиков QR.
+TEMPLATE_SPECS = [
+    {
+        "name": "My Orders",
+        "data": TEMPLATE1_B64,
+        "qr_box": TEMPLATE1_QR,
+        "logo_box": TEMPLATE1_LOGO,
+        "qr_color": (0, 0, 0),
+    },
+    {
+        "name": "Payment received",
+        "data": TEMPLATE2_B64,
+        "qr_box": TEMPLATE2_QR,
+        "logo_box": TEMPLATE2_LOGO,
+        "qr_color": (13, 71, 91),
+    },
+]
+
+_templates = None
 
 
 # --------------------------------------------------------------------------
@@ -61,33 +84,52 @@ def parse_list(value) -> list:
     return [clean_username(x) for x in str(value).split(",") if x.strip()]
 
 
-def get_template() -> Image.Image:
-    """Загружаем картинку-шаблон из встроенных данных и держим в памяти."""
-    global _template
-    if _template is None:
-        _template = Image.open(io.BytesIO(base64.b64decode(TEMPLATE_B64))).convert("RGB")
-    return _template
+def get_templates() -> list:
+    """Готовим шаблоны один раз: распаковываем base64 в картинки."""
+    global _templates
+    if _templates is None:
+        _templates = [
+            {
+                "name": spec["name"],
+                "image": Image.open(
+                    io.BytesIO(base64.b64decode(spec["data"]))
+                ).convert("RGB"),
+                "qr_box": spec["qr_box"],
+                "logo_box": spec["logo_box"],
+                "qr_color": spec["qr_color"],
+            }
+            for spec in TEMPLATE_SPECS
+        ]
+    return _templates
 
 
-def make_qr_png(data: str) -> bytes:
-    """Берём исходный скриншот и меняем в нём только QR-код."""
+def make_qr_png(item: dict, data: str) -> bytes:
+    """Рисуем QR на шаблоне, сохраняя логотип в центре."""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=10,
+        box_size=1,
         border=0,
     )
     qr.add_data(data)
     qr.make(fit=True)
-    qr_image = qr.make_image(fill_color=QR_COLOR, back_color="white").convert("RGB")
-    qr_image = qr_image.resize(
-        (QR_BOX[2] - QR_BOX[0], QR_BOX[3] - QR_BOX[1]), Image.Resampling.NEAREST
-    )
+    n = qr.modules_count  # число квадратиков по стороне
+    qr_image = qr.make_image(fill_color=item["qr_color"], back_color="white").convert("RGB")
 
-    image = get_template().copy()
-    logo = image.crop(LOGO_BOX)
-    image.paste(qr_image, QR_BOX[:2])
-    image.paste(logo, LOGO_BOX[:2])
+    box = item["qr_box"]
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    k = max(1, min(bw, bh) // n)          # целое число пикселей на модуль
+    side = n * k                          # чтобы QR был «ровным» и сканировался
+    qr_image = qr_image.resize((side, side), Image.Resampling.NEAREST)
+
+    image = item["image"].copy()
+    logo = image.crop(item["logo_box"])   # логотип вырезаем ДО затирания
+
+    image.paste((255, 255, 255), box)     # чистим область под QR
+    ox = box[0] + (bw - side) // 2
+    oy = box[1] + (bh - side) // 2
+    image.paste(qr_image, (ox, oy))
+    image.paste(logo, item["logo_box"][:2])
 
     buf = io.BytesIO()
     # compress_level=0 — самое быстрое кодирование PNG (важно для лимита CPU).
@@ -102,7 +144,7 @@ def normalize_url(text: str) -> str:
     return text
 
 
-def tg_send_document(api: str, chat_id, png: bytes, caption: str):
+def tg_send_document(api: str, chat_id, png: bytes, caption: str, filename: str):
     """Отправляем картинку ФАЙЛОМ (sendDocument), чтобы Telegram её не сжимал."""
     boundary = "----botqrboundary7f3a9c2e"
     crlf = b"\r\n"
@@ -120,7 +162,7 @@ def tg_send_document(api: str, chat_id, png: bytes, caption: str):
     body += field("caption", caption)
     body += (
         "--" + boundary + "\r\n"
-        'Content-Disposition: form-data; name="document"; filename="qr.png"\r\n'
+        'Content-Disposition: form-data; name="document"; filename="' + filename + '"\r\n'
         "Content-Type: image/png\r\n\r\n"
     ).encode("utf-8")
     body += png + crlf
@@ -150,12 +192,16 @@ class Default(WorkerEntrypoint):
         if path.endswith("/health"):
             return Response("ok")
 
-        # Диагностика: /debug?text=... отдаёт готовую картинку ИЛИ текст ошибки.
+        # Диагностика: /debug?text=...&t=1 отдаёт готовую картинку ИЛИ текст ошибки.
         if path.endswith("/debug"):
             q = parse_qs(urlparse(request.url).query)
             text = q.get("text", ["https://example.com"])[0]
             try:
-                png = make_qr_png(text)
+                index = max(1, min(len(get_templates()), int(q.get("t", ["1"])[0])))
+            except Exception:
+                index = 1
+            try:
+                png = make_qr_png(get_templates()[index - 1], text)
             except Exception as exc:
                 return Response(f"error: {exc!r}", status=500)
             return Response(to_js(png).buffer, headers={"Content-Type": "image/png"})
@@ -303,17 +349,17 @@ class Default(WorkerEntrypoint):
                 self.send(
                     chat_id,
                     "Привет, администратор!\n\n"
-                    "• Пришли ссылку — получишь QR-код файлом.\n"
+                    "• Пришли ссылку — получишь 2 QR-файла.\n"
                     "• Пришли @username — выдашь этому человеку доступ.\n"
                     "• /list — список доступа.\n"
                     "• /revoke @username — забрать доступ.",
                 )
             else:
-                self.send(chat_id, "Привет! Пришли ссылку — получишь QR-код файлом.")
+                self.send(chat_id, "Привет! Пришли ссылку — получишь 2 QR-файла.")
             return
 
         if text.startswith("/help"):
-            self.send(chat_id, "Отправь ссылку или текст — придёт QR-код файлом.")
+            self.send(chat_id, "Отправь ссылку или текст — придёт 2 QR-файла (два дизайна).")
             return
 
         # Команды администратора (выдача доступа и т.п.).
@@ -344,7 +390,7 @@ class Default(WorkerEntrypoint):
                 )
                 return
 
-        # Генерация QR.
+        # Генерация QR (два шаблона -> два файла).
         if not text:
             self.send(chat_id, "Пришли ссылку или текст одним сообщением.")
             return
@@ -356,10 +402,12 @@ class Default(WorkerEntrypoint):
             payload = text
             caption = "QR для текста"
 
-        png = make_qr_png(payload)
-        resp = tg_send_document(self.api(), chat_id, png, caption)
-        if resp.status_code != 200:
-            raise RuntimeError(f"sendDocument {resp.status_code}: {resp.text[:300]}")
+        for item in get_templates():
+            png = make_qr_png(item, payload)
+            filename = "qr-" + item["name"].lower().replace(" ", "-") + ".png"
+            resp = tg_send_document(self.api(), chat_id, png, caption, filename)
+            if resp.status_code != 200:
+                raise RuntimeError(f"sendDocument {resp.status_code}: {resp.text[:300]}")
 
     async def admin_commands(self, chat_id, text: str) -> bool:
         """Обрабатывает команды администратора. True — если сообщение поглощено."""
