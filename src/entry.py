@@ -3,10 +3,10 @@
 Работает через webhook: Telegram сам присылает сообщение на URL воркера.
 """
 
+import base64
 import io
 import json
 import re
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import qrcode
@@ -15,9 +15,10 @@ from PIL import Image
 from pyodide.ffi import to_js
 from workers import Response, WorkerEntrypoint
 
+from template_data import TEMPLATE_B64
+
 URL_RE = re.compile(r"^(https?://|www\.)[^\s]+$", re.IGNORECASE)
 
-TEMPLATE_PATH = Path(__file__).parent / "template.jpg"
 QR_BOX = (188, 542, 509, 863)
 LOGO_BOX = (308, 662, 389, 743)
 QR_COLOR = (13, 71, 91)
@@ -30,10 +31,10 @@ _template = None
 
 
 def get_template() -> Image.Image:
-    """Загружаем картинку-шаблон один раз и держим в памяти."""
+    """Загружаем картинку-шаблон из встроенных данных и держим в памяти."""
     global _template
     if _template is None:
-        _template = Image.open(TEMPLATE_PATH).convert("RGB")
+        _template = Image.open(io.BytesIO(base64.b64decode(TEMPLATE_B64))).convert("RGB")
     return _template
 
 
@@ -70,8 +71,8 @@ def normalize_url(text: str) -> str:
     return text
 
 
-def tg_send_photo(api: str, chat_id, png: bytes, caption: str):
-    """Отправляем фото multipart-запросом, собранным вручную."""
+def tg_send_document(api: str, chat_id, png: bytes, caption: str):
+    """Отправляем картинку ФАЙЛОМ (sendDocument), чтобы Telegram её не сжимал."""
     boundary = "----botqrboundary7f3a9c2e"
     crlf = b"\r\n"
 
@@ -88,14 +89,14 @@ def tg_send_photo(api: str, chat_id, png: bytes, caption: str):
     body += field("caption", caption)
     body += (
         "--" + boundary + "\r\n"
-        'Content-Disposition: form-data; name="photo"; filename="qr.png"\r\n'
+        'Content-Disposition: form-data; name="document"; filename="qr.png"\r\n'
         "Content-Type: image/png\r\n\r\n"
     ).encode("utf-8")
     body += png + crlf
     body += ("--" + boundary + "--\r\n").encode("utf-8")
 
     return requests.post(
-        f"{api}/sendPhoto",
+        f"{api}/sendDocument",
         data=body,
         headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
         timeout=60,
@@ -219,9 +220,9 @@ class Default(WorkerEntrypoint):
             caption = "QR для текста"
 
         png = make_qr_png(payload)
-        resp = tg_send_photo(api, chat_id, png, caption)
+        resp = tg_send_document(api, chat_id, png, caption)
         if resp.status_code != 200:
-            raise RuntimeError(f"sendPhoto {resp.status_code}: {resp.text[:300]}")
+            raise RuntimeError(f"sendDocument {resp.status_code}: {resp.text[:300]}")
 
     def set_webhook(self, request_url: str) -> Response:
         """Ставим webhook на этот же воркер (вызывается один раз)."""
