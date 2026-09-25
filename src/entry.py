@@ -180,11 +180,27 @@ class Default(WorkerEntrypoint):
 
     # ---------------- Telegram API ----------------
 
+    def env_value(self, name: str, default: str = "") -> str:
+        """Безопасно читаем секрет/переменную: незаданный не должен ломать бота."""
+        try:
+            value = getattr(self.env, name)
+        except Exception:
+            return default
+        if value is None:
+            return default
+        try:
+            text = str(value)
+        except Exception:
+            return default
+        if not text or text in ("undefined", "null"):
+            return default
+        return text
+
     def token(self) -> str:
-        value = self.env.BOT_TOKEN
+        value = self.env_value("BOT_TOKEN")
         if not value:
             raise RuntimeError("Не задан секрет BOT_TOKEN")
-        return str(value)
+        return value
 
     def api(self) -> str:
         return f"https://api.telegram.org/bot{self.token()}"
@@ -209,10 +225,10 @@ class Default(WorkerEntrypoint):
     # ---------------- доступ ----------------
 
     def admin_ids(self) -> list:
-        return parse_list(self.env.ADMIN_IDS)
+        return parse_list(self.env_value("ADMIN_IDS"))
 
     def admin_names(self) -> list:
-        return parse_list(self.env.ADMIN_USERNAMES)
+        return parse_list(self.env_value("ADMIN_USERNAMES"))
 
     def admins_configured(self) -> bool:
         return bool(self.admin_ids() or self.admin_names())
