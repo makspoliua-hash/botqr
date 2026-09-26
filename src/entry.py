@@ -104,7 +104,7 @@ def get_templates() -> list:
 
 
 def make_qr_png(item: dict, data: str) -> bytes:
-    """Рисуем QR на шаблоне, сохраняя логотип в центре."""
+    """Рисуем QR на шаблоне, при наличии сохраняя логотип в центре."""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_H,
@@ -123,13 +123,15 @@ def make_qr_png(item: dict, data: str) -> bytes:
     qr_image = qr_image.resize((side, side), Image.Resampling.NEAREST)
 
     image = item["image"].copy()
-    logo = image.crop(item["logo_box"])   # логотип вырезаем ДО затирания
+    logo_box = item["logo_box"]
+    logo = image.crop(logo_box) if logo_box else None
 
     image.paste((255, 255, 255), box)     # чистим область под QR
     ox = box[0] + (bw - side) // 2
     oy = box[1] + (bh - side) // 2
     image.paste(qr_image, (ox, oy))
-    image.paste(logo, item["logo_box"][:2])
+    if logo is not None:
+        image.paste(logo, logo_box[:2])
 
     buf = io.BytesIO()
     # compress_level=0 — самое быстрое кодирование PNG (важно для лимита CPU).
